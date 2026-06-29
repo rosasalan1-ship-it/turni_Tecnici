@@ -74,7 +74,7 @@ if data_inizio is not None:
     col_labels = []
     for i in range(DAYS):
         giorno = data_inizio + datetime.timedelta(days=i)
-        col_labels.append(f"{i+1} {GIORNI_SETT[giorno.weekday()]}")
+        col_labels.append(f"{i+1}\n{GIORNI_SETT[giorno.weekday()]}")
 else:
     st.info("Seleziona la data di inizio per vedere i giorni della settimana nella tabella.")
     col_labels = COL_NAMES
@@ -613,7 +613,7 @@ if st.button("🚀 Genera turni", type="primary"):
         for i in range(DAYS):
             if data_inizio is not None:
                 giorno = data_inizio + _dt.timedelta(days=i)
-                col_labels_out.append(f"{i+1} ({GIORNI_SETT[giorno.weekday()]})")
+                col_labels_out.append(f"{i+1}\n{GIORNI_SETT[giorno.weekday()]}")
             else:
                 col_labels_out.append(str(i + 1))
  
@@ -662,8 +662,9 @@ if st.button("🚀 Genera turni", type="primary"):
         )
  
         import io
-        from openpyxl.styles import Border, Side
+        from openpyxl.styles import Border, Side, Alignment
         from openpyxl.worksheet.page import PageMargins
+        from openpyxl.utils import get_column_letter
  
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -672,6 +673,7 @@ if st.button("🚀 Genera turni", type="primary"):
  
             thin = Side(border_style="thin", color="444444")
             border = Border(left=thin, right=thin, top=thin, bottom=thin)
+            header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
  
             for sheet_name in ["Turni", "Riepilogo"]:
                 ws = writer.sheets[sheet_name]
@@ -682,6 +684,16 @@ if st.button("🚀 Genera turni", type="primary"):
                 ):
                     for cell in row:
                         cell.border = border
+ 
+                # intestazioni (riga 1): centra e va a capo (numero giorno / giorno settimana)
+                for cell in ws[1]:
+                    cell.alignment = header_align
+ 
+                # colonne giorno più strette (testo max 4-5 caratteri nei codici)
+                if sheet_name == "Turni":
+                    ws.column_dimensions["A"].width = 12  # colonna nomi tecnici
+                    for col_idx in range(2, ws.max_column + 1):
+                        ws.column_dimensions[get_column_letter(col_idx)].width = 6
  
                 # impostazioni di stampa: orizzontale, tutte le colonne su una pagina
                 ws.page_setup.orientation = "landscape"
