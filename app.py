@@ -5,16 +5,73 @@ from ortools.sat.python import cp_model
 # =========================
 # CONFIG
 # =========================
-TECHS = ["Tiziana", "Rosario", "Ragusa", "Cunsolo"]
-DAYS = 30
+TECHS = ["Giugno", "De Simone", "Ragusa", "Cunsolo"]   # tecnici interni gestiti dal solver
+EXTERNAL = "Esterno"                                    # tecnico esterno: SOLO input manuale, mai assegnato dal solver
+ALL_ROWS = TECHS + [EXTERNAL]                           # tutte le righe mostrate nelle tabelle
+DAYS_DEFAULT = 30   # usato solo finché non è stata scelta una data di inizio
 WORK_SHIFTS = ["M", "P", "N"]
 REP_SHIFTS = ["REPN", "REPD"]
 ALL_SHIFTS = WORK_SHIFTS + REP_SHIFTS
  
-MAX_REP_MONTH = 7          # REP totali (REPN+REPD) al mese, per tutti
-TIZIANA_MAX_NOTTI = 6      # N + REPN per Tiziana
+MAX_REP_MONTH = 7          # REP totali (REPN+REPD) al mese, per tutti i tecnici interni
+GIUGNO_MAX_NOTTI = 6       # N + REPN per il tecnico nella riga "Giugno" (era Tiziana)
+ 
+# simbolo colorato per ogni riga: solo VISIVO, aiuta a non perdere la riga durante lo
+# scroll orizzontale sui giorni. Inserito nelle celle vuote della griglia di INPUT e
+# sempre rimosso prima che il dato venga salvato/letto dal solver (vedi normalizza_cella).
+ROW_DOT = {
+    "Giugno": "🟦",
+    "De Simone": "🟩",
+    "Ragusa": "🟨",
+    "Cunsolo": "🟧",
+    EXTERNAL: "⬜",
+}
+ 
+ 
+def normalizza_cella(val):
+    """Rimuove il puntino visivo (se presente) e gli spazi: usato OVUNQUE il dato
+    venga letto/salvato, cosi' il puntino non interferisce mai con la logica."""
+    val = str(val)
+    for dot in ROW_DOT.values():
+        val = val.replace(dot, "")
+    return val.strip()
+ 
+ 
+def aggiungi_puntini_per_display(df):
+    """Ritorna una COPIA del dataframe con il puntino colorato della riga inserito
+    nelle celle vuote, solo per la visualizzazione nella griglia di input."""
+    out = df.copy()
+    for tecnico in out.index:
+        dot = ROW_DOT.get(tecnico, "")
+        if not dot:
+            continue
+        for col in out.columns:
+            if normalizza_cella(out.loc[tecnico, col]) == "":
+                out.loc[tecnico, col] = dot
+    return out
+ 
  
 st.set_page_config(page_title="Gestione Turni", layout="wide")
+ 
+# =========================
+# AUTENTICAZIONE
+# =========================
+PASSWORD = "Radiologia_Tecnici2026"
+ 
+if "autenticato" not in st.session_state:
+    st.session_state.autenticato = False
+ 
+if not st.session_state.autenticato:
+    st.title("🔒 Accesso riservato")
+    pwd = st.text_input("Password:", type="password", placeholder="Inserisci la password")
+    if st.button("Accedi"):
+        if pwd == PASSWORD:
+            st.session_state.autenticato = True
+            st.rerun()
+        else:
+            st.error("❌ Password errata.")
+    st.stop()  # blocca tutto il resto dell'app finché non si è autenticati
+ 
 st.title("📅 Pianificazione Turni - Tecnici")
  
 # CSS globale: bordi su tutte le tabelle/data_editor dell'app
@@ -49,32 +106,62 @@ st.markdown(
     """
 **Codici disponibili per ogni giorno:**
 `F` · `MAL` · `RC` · `CS` · `RR` · `IM` · `IP` · `IN` · `IREPN` · `IREPD` · `DM` · `DP` · `DN` · `DREPN` · `DREPD` · `M` · `P` · `N` · `REPN` · `REPD`
+ 
+ℹ️ Riga **Esterno**: solo `M`, `P`, `N`, `REPN`, `REPD` (assegnazione manuale, mai automatica). Cella vuota = quel giorno è come se non esistesse.
 """
 )
  
 # =========================
 # INPUT - TABELLA EDITABILE
 # =========================
-COL_NAMES = [str(i) for i in range(1, DAYS + 1)]
- 
-if "inp" not in st.session_state:
-    st.session_state.inp = pd.DataFrame("", index=TECHS, columns=COL_NAMES)
- 
-if "festivo_giorni" not in st.session_state:
-    st.session_state.festivo_giorni = ""
- 
 st.subheader("Inserisci disponibilità / vincoli")
  
 data_inizio = st.date_input("Data di inizio del periodo (giorno 1)", value=None)
  
 GIORNI_SETT = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"]
  
+# numero di giorni nel mese del 1° giorno scelto (28/29/30/31). Se nessuna data
+# è stata scelta, si usa un valore di default finché l'utente non la imposta.
+if data_inizio is not None:
+    import calendar
+    DAYS = calendar.monthrange(data_inizio.year, data_inizio.month)[1]
+else:
+    DAYS = DAYS_DEFAULT
+ 
+COL_NAMES = [str(i) for i in range(1, DAYS + 1)]
+ 
+if "inp" not in st.session_state:
+    st.session_state.inp = pd.DataFrame("", index=ALL_ROWS, columns=COL_NAMES)
+elif st.session_state.inp.shape[1] != DAYS:
+    # il mese scelto ha un numero di giorni diverso dalla tabella già salvata:
+    # ridimensiono preservando i dati già inseriti nei giorni comuni (es. 1-28 di un mese più corto)
+    old = st.session_state.inp
+    new = pd.DataFrame("", index=ALL_ROWS, columns=COL_NAMES)
+    common_cols = [c for c in old.columns if c in new.columns]
+    new[common_cols] = old[common_cols]
+    st.session_state.inp = new
+    st.warning(
+        f"⚠️ Il mese selezionato ha {DAYS} giorni: la griglia è stata adattata "
+        f"(i dati inseriti nei giorni comuni sono stati mantenuti)."
+    )
+ 
+if "festivo_giorni" not in st.session_state:
+    st.session_state.festivo_giorni = ""
+ 
+# festivi già SALVATI in precedenza (usati per marcare le intestazioni della griglia di input)
+_festivi_set_saved = set()
+for _tok in st.session_state.festivo_giorni.replace(" ", "").split(","):
+    if _tok.isdigit():
+        _festivi_set_saved.add(int(_tok))
+ 
 if data_inizio is not None:
     import datetime
     col_labels = []
     for i in range(DAYS):
         giorno = data_inizio + datetime.timedelta(days=i)
-        col_labels.append(f"{i+1}\n{GIORNI_SETT[giorno.weekday()]}")
+        is_dom_o_festivo = giorno.weekday() == 6 or (i + 1) in _festivi_set_saved
+        prefix = "🔴" if is_dom_o_festivo else ""
+        col_labels.append(f"{prefix}{i+1}\n{GIORNI_SETT[giorno.weekday()]}")
 else:
     st.info("Seleziona la data di inizio per vedere i giorni della settimana nella tabella.")
     col_labels = COL_NAMES
@@ -83,10 +170,11 @@ else:
 col_clear, _ = st.columns([1, 5])
 with col_clear:
     if st.button("🧹 Pulisci griglia"):
-        st.session_state.inp = pd.DataFrame("", index=TECHS, columns=COL_NAMES)
+        st.session_state.inp = pd.DataFrame("", index=ALL_ROWS, columns=COL_NAMES)
         st.session_state.festivo_giorni = ""
-        if "editor_input" in st.session_state:
-            del st.session_state["editor_input"]
+        editor_key = f"editor_input_{DAYS}"
+        if editor_key in st.session_state:
+            del st.session_state[editor_key]
         st.rerun()
  
 # La griglia è dentro un FORM: le modifiche si fissano solo al click di "Salva",
@@ -94,11 +182,12 @@ with col_clear:
 # mentre stai ancora scrivendo nelle celle.
 with st.form("form_input", border=False):
     festivo_input = st.text_input(
-        "Giorni festivi (numeri separati da virgola, es: 5,12,25) — si comportano come domenica:",
+        "Giorni festivi (numeri separati da virgola) — si comportano come domenica:",
         value=st.session_state.festivo_giorni,
+        placeholder="es: 5, 12, 25",
     )
  
-    display_df = st.session_state.inp.copy()
+    display_df = aggiungi_puntini_per_display(st.session_state.inp)
     display_df.columns = col_labels
  
     # colonne strette (max 4 lettere nei codici): si vede tutto il mese senza scroll
@@ -111,7 +200,7 @@ with st.form("form_input", border=False):
         display_df,
         use_container_width=False,
         num_rows="fixed",
-        key="editor_input",
+        key=f"editor_input_{DAYS}",
         column_config=col_config_input,
     )
  
@@ -120,6 +209,10 @@ with st.form("form_input", border=False):
 if salva:
     edited = edited_display.copy()
     edited.columns = COL_NAMES
+    # rimuove i puntini visivi colonna per colonna: il dato salvato resta sempre pulito
+    # (compatibile con qualunque versione di pandas, a differenza di .map/.applymap)
+    for _col in edited.columns:
+        edited[_col] = edited[_col].apply(normalizza_cella)
     st.session_state.inp = edited
     st.session_state.festivo_giorni = festivo_input
     st.success("Tabella salvata.")
@@ -204,6 +297,24 @@ if st.button("🚀 Genera turni", type="primary"):
         return str(v).strip() == s
  
     # =========================
+    # 0b. TECNICO ESTERNO (riga "Esterno"): SOLO input manuale, mai assegnato dal solver.
+    #     Se per un dato giorno/turno l'Esterno e' assegnato (cella = "M"/"P"/"N"/"REPN"/"REPD"),
+    #     quel turno viene bloccato per TUTTI i tecnici interni quel giorno (niente doppia copertura).
+    #     Se la cella dell'Esterno e' vuota quel giorno, e' come se non esistesse: i tecnici interni
+    #     restano liberi di coprire normalmente quel turno.
+    # =========================
+    external_assigned = {}  # (d, s) -> True se l'Esterno copre quel turno quel giorno
+    for d in range(DAYS):
+        cella_esterno = str(inp.loc[EXTERNAL, str(d + 1)]) if EXTERNAL in inp.index else ""
+        for s in ALL_SHIFTS:
+            if is_forced(cella_esterno, s):
+                external_assigned[(d, s)] = True
+                for t in TECHS:
+                    v_ = var(t, d, s)
+                    if v_ is not None:
+                        model.Add(v_ == 0)
+ 
+    # =========================
     # 1. MUTUAL EXCLUSION GIORNALIERA
     # =========================
     for t in TECHS:
@@ -260,16 +371,29 @@ if st.button("🚀 Genera turni", type="primary"):
                         model.Add(v_ == 1)
  
     # =========================
-    # 4. MAX 6 UNITA' SETTIMANALI (M=1, P=1, N=2). REP NON CONTA.
-    #    Tutti i lavoratori NON in ferie devono tendere a 6 unita'/settimana
-    #    (vincolo HARD <=6, spinta forte verso 6 nell'obiettivo piu' sotto)
+    # 4. UNITA' LAVORATIVE SETTIMANALI (M=1, P=1, N=2 unita'; REP non conta).
+    #    Per ogni tecnico, in ogni settimana (piena o parziale, es. gli ultimi giorni
+    #    del mese), le unita' lavorate devono essere ESATTAMENTE pari ai giorni
+    #    lavorativi della settimana per quel tecnico, dove:
+    #      giorni_lavorativi = giorni della settimana
+    #                          - domeniche/festivi (non si contano mai)
+    #                          - giorni di assenza F/MAL/RC/CS/RR del tecnico (si sottraggono)
+    #    Esempio: settimana di 7 giorni con 1 domenica -> 6 giorni lavorativi -> 6 unita'.
+    #    Esempio: settimana parziale di 3 giorni (nessuna domenica/assenza) -> 3 unita'.
     # =========================
-    weekly_unit_vars = []  # (somma_unita_var) per dare un bonus quando si avvicina a 6
+    weekly_unit_vars = []  # somma_unita_var per ogni (tecnico, settimana): usata anche nell'obiettivo
     for t in TECHS:
-        for w in range(DAYS // 7):
-            days_in_week = range(w * 7, min((w + 1) * 7, DAYS))
+        for w_start in range(0, DAYS, 7):
+            days_in_week = range(w_start, min(w_start + 7, DAYS))
             terms = []
+            giorni_lavorativi = 0
             for d in days_in_week:
+                if is_giorno_speciale(d):
+                    continue  # domenica/festivo: non e' un giorno lavorativo, non conta
+                cella = inp.loc[t, str(d + 1)]
+                if is_absent(cella):
+                    continue  # F/MAL/RC/CS/RR: giorno sottratto dal conteggio per questo tecnico
+                giorni_lavorativi += 1
                 if var(t, d, "M") is not None:
                     terms.append(var(t, d, "M"))
                 if var(t, d, "P") is not None:
@@ -277,8 +401,8 @@ if st.button("🚀 Genera turni", type="primary"):
                 n_ = var(t, d, "N")
                 if n_ is not None:
                     terms.append(2 * n_)
-            if terms:
-                model.Add(sum(terms) <= 6)
+            if terms or giorni_lavorativi:
+                model.Add(sum(terms) == giorni_lavorativi)
                 weekly_unit_vars.append(sum(terms))
  
     # =========================
@@ -296,17 +420,17 @@ if st.button("🚀 Genera turni", type="primary"):
         model.Add(rep_total[t] <= MAX_REP_MONTH)
  
     # =========================
-    # 6. TIZIANA: MAX 6 NOTTI (N + REPN) AL MESE
+    # 6. GIUGNO: MAX 6 NOTTI (N + REPN) AL MESE (era "Tiziana", stessa limitazione per riga)
     # =========================
-    tiz_notti = []
+    giugno_notti = []
     for d in range(DAYS):
-        n_ = var("Tiziana", d, "N")
+        n_ = var("Giugno", d, "N")
         if n_ is not None:
-            tiz_notti.append(n_)
-        repn_ = var("Tiziana", d, "REPN")
+            giugno_notti.append(n_)
+        repn_ = var("Giugno", d, "REPN")
         if repn_ is not None:
-            tiz_notti.append(repn_)
-    model.Add(sum(tiz_notti) <= TIZIANA_MAX_NOTTI)
+            giugno_notti.append(repn_)
+    model.Add(sum(giugno_notti) <= GIUGNO_MAX_NOTTI)
  
     # =========================
     # 7. RIPOSO DOPO N: STOP COMPLETO IL GIORNO DOPO (nessun turno/REP)
@@ -362,10 +486,14 @@ if st.button("🚀 Genera turni", type="primary"):
         if is_giorno_speciale(d):
             repd_vars = [var(t, d, "REPD") for t in TECHS if var(t, d, "REPD") is not None]
             if repd_vars:
-                model.Add(sum(repd_vars) <= 1)  # un solo operatore in REPD
-                slack_d = model.NewBoolVar(f"repd_uncovered_{d}")
-                model.Add(sum(repd_vars) + slack_d >= 1)
-                sunday_repd_uncovered[d] = slack_d
+                model.Add(sum(repd_vars) <= 1)  # un solo operatore interno in REPD
+                if external_assigned.get((d, "REPD")):
+                    # l'Esterno coprirà la REPD: già coperta, nessuno slack di scopertura
+                    sunday_repd_uncovered[d] = None
+                else:
+                    slack_d = model.NewBoolVar(f"repd_uncovered_{d}")
+                    model.Add(sum(repd_vars) + slack_d >= 1)
+                    sunday_repd_uncovered[d] = slack_d
  
         # copertura notte (REPN o N) - tutti i giorni, incluse le domeniche (solo REPN)
         coverage_vars = []
@@ -377,10 +505,14 @@ if st.button("🚀 Genera turni", type="primary"):
             if repn_ is not None:
                 coverage_vars.append(repn_)
         if coverage_vars:
-            model.Add(sum(coverage_vars) <= 1)  # un solo operatore copre la notte
-            slack = model.NewBoolVar(f"night_uncovered_{d}")
-            model.Add(sum(coverage_vars) + slack >= 1)
-            night_uncovered[d] = slack
+            model.Add(sum(coverage_vars) <= 1)  # un solo operatore interno copre la notte
+            if external_assigned.get((d, "REPN")) or external_assigned.get((d, "N")):
+                # l'Esterno coprirà la notte: già coperta, nessuno slack di scopertura
+                night_uncovered[d] = None
+            else:
+                slack = model.NewBoolVar(f"night_uncovered_{d}")
+                model.Add(sum(coverage_vars) + slack >= 1)
+                night_uncovered[d] = slack
  
     # =========================
     # 11. CONTINUITA' WEEKEND (SOFT) + REPD A OPERATORE DIVERSO (HARD)
@@ -507,8 +639,8 @@ if st.button("🚀 Genera turni", type="primary"):
  
     objective += [2 * v for v in weekend_bonus_vars]
  
-    # spinta forte verso 6 unita'/settimana per ogni operatore (evita i "buchi")
-    objective += [4 * v for v in weekly_unit_vars]
+    # NOTA: le unita' settimanali sono ora fissate da un vincolo di uguaglianza HARD
+    # (sezione 4 sopra), quindi non serve piu' un bonus soft nell'obiettivo per spingerle.
  
     # bonus generale di riempimento: qualsiasi M/P assegnato è meglio di un buco
     # (i blank non coperti da F/MAL/I*/D* vengono preferibilmente messi in M)
@@ -528,8 +660,21 @@ if st.button("🚀 Genera turni", type="primary"):
                 model.AddMultiplicationEquality(both, [repn_, p_next])
                 objective.append(2 * both)
  
-    objective += [-50 * s for s in night_uncovered.values()]
-    objective += [-50 * s for s in sunday_repd_uncovered.values()]
+    # bonus: lo stesso giorno della REPN, preferiamo che il tecnico faccia anche M mattina
+    # (non obbligatorio). var(t, d, "M") e' None nei giorni domenica/festivo (dove M non
+    # esiste nel modello), quindi il bonus si applica automaticamente solo dove e' possibile.
+    # M e REPN non sono mutuamente esclusivi nel modello, quindi possono coesistere.
+    for t in TECHS:
+        for d in range(DAYS):
+            repn_ = var(t, d, "REPN")
+            m_ = var(t, d, "M")
+            if repn_ is not None and m_ is not None:
+                both = model.NewBoolVar(f"m_with_repn_{t}_{d}")
+                model.AddMultiplicationEquality(both, [m_, repn_])
+                objective.append(4 * both)  # peso 4: preferenza forte ma non blocca la soluzione
+ 
+    objective += [-50 * s for s in night_uncovered.values() if s is not None]
+    objective += [-50 * s for s in sunday_repd_uncovered.values() if s is not None]
  
     # penalita' forte sullo squilibrio tra operatori (equita')
     objective += [-4 * s for s in fairness_terms]
@@ -548,7 +693,7 @@ if st.button("🚀 Genera turni", type="primary"):
     status = solver.Solve(model)
  
     if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        out = pd.DataFrame("", index=TECHS, columns=[str(i) for i in range(1, DAYS + 1)])
+        out = pd.DataFrame("", index=ALL_ROWS, columns=[str(i) for i in range(1, DAYS + 1)])
         for t in TECHS:
             for d in range(DAYS):
                 cella_input = str(inp.loc[t, str(d + 1)])
@@ -566,9 +711,14 @@ if st.button("🚀 Genera turni", type="primary"):
                         assigned.append(s)
                 out.loc[t, str(d + 1)] = "+".join(assigned)
  
+        # riga Esterno: riportata 1:1 da quanto inserito manualmente (mai dal solver)
+        for d in range(DAYS):
+            cella_esterno = str(inp.loc[EXTERNAL, str(d + 1)]).strip() if EXTERNAL in inp.index else ""
+            out.loc[EXTERNAL, str(d + 1)] = cella_esterno if cella_esterno in ALL_SHIFTS else ""
+ 
         # giorni scoperti -> riga speciale "SCOPERTO" sotto la tabella
-        giorni_scoperti_notte = [d + 1 for d, s in night_uncovered.items() if solver.Value(s) == 1]
-        giorni_scoperti_repd = [d + 1 for d, s in sunday_repd_uncovered.items() if solver.Value(s) == 1]
+        giorni_scoperti_notte = [d + 1 for d, s in night_uncovered.items() if s is not None and solver.Value(s) == 1]
+        giorni_scoperti_repd = [d + 1 for d, s in sunday_repd_uncovered.items() if s is not None and solver.Value(s) == 1]
  
         # riga aggiuntiva nella tabella che segnala "SCOPERTO" sul giorno
         out.loc["⚠️ SCOPERTO NOTTE"] = ""
@@ -608,14 +758,15 @@ if st.button("🚀 Genera turni", type="primary"):
                 return BORDER + "background-color: #fff3cd"
             return BORDER
  
-        # intestazioni con i giorni della settimana
+        # intestazioni con i giorni della settimana (🔴 davanti al numero = domenica/festivo)
         col_labels_out = []
         for i in range(DAYS):
+            prefix = "🔴" if is_giorno_speciale(i) else ""
             if data_inizio is not None:
                 giorno = data_inizio + _dt.timedelta(days=i)
-                col_labels_out.append(f"{i+1}\n{GIORNI_SETT[giorno.weekday()]}")
+                col_labels_out.append(f"{prefix}{i+1}\n{GIORNI_SETT[giorno.weekday()]}")
             else:
-                col_labels_out.append(str(i + 1))
+                col_labels_out.append(f"{prefix}{i + 1}")
  
         out_display = out.copy()
         out_display.columns = col_labels_out
@@ -635,8 +786,8 @@ if st.button("🚀 Genera turni", type="primary"):
         st.subheader("Riepilogo per tecnico")
         ABSENCE_CODES = ["F", "MAL", "RC", "CS", "RR"]
         RIEPILOGO_COLS = ALL_SHIFTS + ABSENCE_CODES
-        summary = pd.DataFrame(index=TECHS, columns=RIEPILOGO_COLS).fillna(0)
-        for t in TECHS:
+        summary = pd.DataFrame(index=ALL_ROWS, columns=RIEPILOGO_COLS).fillna(0)
+        for t in ALL_ROWS:
             for s in ALL_SHIFTS:
                 summary.loc[t, s] = sum(
                     1 for d in range(DAYS) if s in str(out.loc[t, str(d + 1)]).split("+")
@@ -662,47 +813,99 @@ if st.button("🚀 Genera turni", type="primary"):
         )
  
         import io
-        from openpyxl.styles import Border, Side, Alignment
+        from openpyxl.styles import Border, Side, Alignment, Font
         from openpyxl.worksheet.page import PageMargins
         from openpyxl.utils import get_column_letter
  
+        MESI_IT = [
+            "Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno",
+            "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre",
+        ]
+        nome_mese = MESI_IT[data_inizio.month - 1] if data_inizio is not None else ""
+        intestazione_testo = (
+            f"ASP Caltanissetta - P.O. Suor Cecilia Bassarocco - Radiologia - Mese di {nome_mese}"
+            if nome_mese
+            else "ASP Caltanissetta - P.O. Suor Cecilia Bassarocco - Radiologia"
+        )
+ 
+        # tabella trasposta: giorni in riga, tecnici (incluso Esterno) in colonna
+        out_vert = out_display.copy().transpose()
+ 
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            out_display.to_excel(writer, sheet_name="Turni")
-            summary.to_excel(writer, sheet_name="Riepilogo")
+            HEADER_ROWS = 2  # 1 riga di intestazione + 1 riga vuota di distacco
+            out_display.to_excel(writer, sheet_name="Turni", startrow=HEADER_ROWS)
+            summary.to_excel(writer, sheet_name="Riepilogo", startrow=HEADER_ROWS)
+            out_vert.to_excel(writer, sheet_name="Turni (verticale)", startrow=HEADER_ROWS)
  
             thin = Side(border_style="thin", color="444444")
             border = Border(left=thin, right=thin, top=thin, bottom=thin)
             header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            title_font = Font(bold=True, size=12)
+            signature_font = Font(size=10)
  
-            for sheet_name in ["Turni", "Riepilogo"]:
+            def applica_intestazione_e_firme(ws, ultima_riga_tabella):
+                # intestazione testuale fissa nelle prime righe del foglio (non header di stampa)
+                n_col_title = max(2, ws.max_column)
+                ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=n_col_title)
+                ws.cell(row=1, column=1, value=intestazione_testo).font = title_font
+ 
+                # spazio firme: 4 tecnici interni + Responsabile, due righe sotto la tabella
+                riga = ultima_riga_tabella + 2
+                ws.cell(row=riga, column=1, value="Firme:").font = Font(bold=True)
+                riga += 1
+                n_col_merge = min(6, max(2, ws.max_column))  # estende la linea firma su alcune colonne
+                for tecnico in TECHS:
+                    ws.cell(row=riga, column=1, value=f"{tecnico}:").font = signature_font
+                    ws.merge_cells(start_row=riga, start_column=2, end_row=riga, end_column=n_col_merge)
+                    ws.cell(row=riga, column=2, value="_______________________________")
+                    riga += 1
+                ws.cell(row=riga, column=1, value="Responsabile:").font = Font(bold=True, size=10)
+                ws.merge_cells(start_row=riga, start_column=2, end_row=riga, end_column=n_col_merge)
+                ws.cell(row=riga, column=2, value="_______________________________")
+ 
+            for sheet_name in ["Turni", "Riepilogo", "Turni (verticale)"]:
                 ws = writer.sheets[sheet_name]
+                header_row_excel = HEADER_ROWS + 1  # riga in cui inizia l'intestazione della tabella dati
  
-                # bordi su tutte le celle con dati (incluse intestazioni)
+                # bordi su tutte le celle della tabella dati (incluse intestazioni)
                 for row in ws.iter_rows(
-                    min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column
+                    min_row=header_row_excel, max_row=ws.max_row, min_col=1, max_col=ws.max_column
                 ):
                     for cell in row:
                         cell.border = border
  
-                # intestazioni (riga 1): centra e va a capo (numero giorno / giorno settimana)
-                for cell in ws[1]:
+                # intestazioni tabella: centra e va a capo
+                for cell in ws[header_row_excel]:
                     cell.alignment = header_align
  
-                # colonne giorno più strette (testo max 4-5 caratteri nei codici)
+                # larghezza colonne e impostazioni di stampa specifiche per foglio
                 if sheet_name == "Turni":
                     ws.column_dimensions["A"].width = 12  # colonna nomi tecnici
                     for col_idx in range(2, ws.max_column + 1):
                         ws.column_dimensions[get_column_letter(col_idx)].width = 6
+                    ws.page_setup.orientation = "landscape"
+                    ws.page_setup.fitToWidth = 1
+                    ws.page_setup.fitToHeight = 0
+                elif sheet_name == "Riepilogo":
+                    ws.column_dimensions["A"].width = 14
+                    ws.page_setup.orientation = "landscape"
+                    ws.page_setup.fitToWidth = 1
+                    ws.page_setup.fitToHeight = 0
+                else:  # Turni (verticale): tecnici in colonna, giorni in riga -> stampa verticale
+                    ws.column_dimensions["A"].width = 14  # colonna giorni
+                    for col_idx in range(2, ws.max_column + 1):
+                        ws.column_dimensions[get_column_letter(col_idx)].width = 16
+                    ws.page_setup.orientation = "portrait"
+                    ws.page_setup.fitToWidth = 1
+                    ws.page_setup.fitToHeight = 0
  
-                # impostazioni di stampa: orizzontale, tutte le colonne su una pagina
-                ws.page_setup.orientation = "landscape"
-                ws.page_setup.fitToWidth = 1
-                ws.page_setup.fitToHeight = 0  # 0 = altezza libera (più pagine in verticale se serve)
                 ws.sheet_properties.pageSetUpPr.fitToPage = True
                 ws.page_margins = PageMargins(
                     left=0.3, right=0.3, top=0.4, bottom=0.4, header=0.2, footer=0.2
                 )
+ 
+                applica_intestazione_e_firme(ws, ws.max_row)
         buffer.seek(0)
  
         st.download_button(
