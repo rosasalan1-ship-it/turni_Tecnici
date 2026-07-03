@@ -133,8 +133,6 @@ COL_NAMES = [str(i) for i in range(1, DAYS + 1)]
 if "inp" not in st.session_state:
     st.session_state.inp = pd.DataFrame("", index=ALL_ROWS, columns=COL_NAMES)
 elif st.session_state.inp.shape[1] != DAYS:
-    # il mese scelto ha un numero di giorni diverso dalla tabella già salvata:
-    # ridimensiono preservando i dati già inseriti nei giorni comuni (es. 1-28 di un mese più corto)
     old = st.session_state.inp
     new = pd.DataFrame("", index=ALL_ROWS, columns=COL_NAMES)
     common_cols = [c for c in old.columns if c in new.columns]
@@ -144,6 +142,10 @@ elif st.session_state.inp.shape[1] != DAYS:
         f"⚠️ Il mese selezionato ha {DAYS} giorni: la griglia è stata adattata "
         f"(i dati inseriti nei giorni comuni sono stati mantenuti)."
     )
+ 
+if st.session_state.get("_appena_salvato"):
+    st.success("✅ Tabella salvata.")
+    st.session_state._appena_salvato = False
  
 if "festivo_giorni" not in st.session_state:
     st.session_state.festivo_giorni = ""
@@ -209,13 +211,12 @@ with st.form("form_input", border=False):
 if salva:
     edited = edited_display.copy()
     edited.columns = COL_NAMES
-    # rimuove i puntini visivi colonna per colonna: il dato salvato resta sempre pulito
-    # (compatibile con qualunque versione di pandas, a differenza di .map/.applymap)
     for _col in edited.columns:
         edited[_col] = edited[_col].apply(normalizza_cella)
     st.session_state.inp = edited
     st.session_state.festivo_giorni = festivo_input
-    st.success("Tabella salvata.")
+    st.session_state._appena_salvato = True
+    st.rerun()  # forza ricaricamento immediato dal dato salvato, evita perdita celle
  
  
 inp = st.session_state.inp
